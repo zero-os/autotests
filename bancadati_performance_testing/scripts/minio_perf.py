@@ -96,8 +96,8 @@ class Utils(object):
                 file_download_speed = (file_size / ((d_end - d_start) * 1024 * 1024))
 
                 # results
-                data = [file_name, file_size, file_upload_speed, u_start,
-                        u_end, file_download_speed, d_start, d_end]
+                data = [file_name, file_size, '%.2f' % file_upload_speed, '%.2f' % u_start,
+                        '%.2f' % u_end, '%.2f' % file_download_speed, '%.2f' % d_start, '%.2f' % d_end]
             with lock:
                 results_file = open(res_path, 'a')
                 with results_file:
