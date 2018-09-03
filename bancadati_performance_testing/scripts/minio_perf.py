@@ -2,6 +2,7 @@ import gevent
 from minio import Minio
 from argparse import ArgumentParser
 from gevent.lock import BoundedSemaphore
+from jumpscale import j
 import signal
 import time
 import math
@@ -12,8 +13,16 @@ import shutil
 import uuid
 import argparse
 import random
+import sys
+import importlib
+import logging
 
 lock = BoundedSemaphore(1)
+logger = j.logger.get('minio_performance')
+FORMAT = '%(asctime)-15s %(name)s %(levelname)s: %(message)s'
+handler = logging.handlers.RotatingFileHandler(filename='/var/log/%s.log' % logger.name)
+handler.setFormatter(logging.Formatter(FORMAT))
+logger.addHandler(handler)
 
 
 class Utils(object):
@@ -48,8 +57,8 @@ class Utils(object):
         cjobs = [gevent.spawn(create_job, file_num_size[0], file_num_size[1]) for file_num_size in file_num_size_list]
         gevent.joinall(cjobs)
 
-        print('finished generating files')
-        print('started coping folder containg generated files')
+        logger.info('* Finished generating files')
+        logger.info('* Replicating generated files for other minios ..')
         files_paths = []
         # copy directory
         files_paths.append(files_path)
@@ -57,7 +66,7 @@ class Utils(object):
             copy_dir_name = files_path + str(m + 2)
             files_paths.append(copy_dir_name)
             shutil.copytree(files_path, copy_dir_name)
-        print("Finished copying folders")
+        logger.info("* Finished copying folders")
         return files_paths
 
     def upload_download_files(self, minio_client, files_path):
@@ -118,6 +127,31 @@ class Utils(object):
         jobs = [gevent.spawn(job, minio_client, bucket_name, res_path, file_path) for file_path in files_joint_list]
         gevent.joinall(jobs)
 
+    def aggregate_results(self, files_paths):
+        """
+        files_paths: list of paths for minios where results file for each minio exists
+        """
+        def get_minio_res_file(res_dir):
+            files = os.listdir(res_dir)
+            for f in files:
+                # if true, then it's results file
+                if f.endswith('csv'):
+                    return os.path.join(res_dir, f)
+
+        rand = str(uuid.uuid4()).replace('-', '')[:10]
+        res_path = '/tmp/results_aggregated_{}.csv'.format(rand)
+        results_file = open(res_path, 'a')
+        with results_file:
+            writer = csv.writer(results_file)
+
+            for files_path in files_paths:
+                minio_res_file_path = get_minio_res_file(files_path)
+                if minio_res_file_path:
+                    with open(minio_res_file_path, 'r') as minio_res_file:
+                        reader = csv.reader(minio_res_file)
+                        for res_row in reader:
+                            writer.writerow(res_row)
+
     # later on get the objects names using the minio client if possible
     def teardown_minios(self, files_names, minio_client):
         buckets = minio_client.list_buckets()
@@ -130,6 +164,11 @@ class Utils(object):
 def main(options):
     utils = Utils(options)
 
+    # check dependencies
+    out = importlib.util.find_spec("minio")
+    if out.loader is None:
+        os.system("pip3 install minio")
+
     # clean data folders
     os.system('rm -rf /tmp/minio*')
 
@@ -141,9 +180,17 @@ def main(options):
     file_num_size_list = []
     for files_num, file_size in pairs(options.files_num_sizes):
         file_num_size_list.append((int(files_num), int(file_size)))
+    total_size = sum([f[0] * f[1] for f in file_num_size_list])
+    if float(total_size / 1000000000) >= 1:
+        size = '%.1f' % float(total_size / 1000000000) + ' GB'
+        execute = str(input('\n* Please note that the size needed to generate files to be uploaded is: {}.. if you have enough space, please enter "yes": '.format(size)))
+        if execute != "yes":
+            sys.exit(1)
+    logger.info("* Generating files for all minios to be uploaded ..")
     files_paths = utils.create_files(file_num_size_list)
 
     # upload/download files to/from minios servers
+    logger.info("* Uploading/Downloading files to/from minios servers ..")
     minios = utils.parse_minios_file(options.minios_file)
 
     # Get minio clients
@@ -155,18 +202,24 @@ def main(options):
         try:
             minio_client = Minio(minio_url, access_key=minio_key,
                                  secret_key=minio_secret, secure=False)
+            minio_clients.append(minio_client)
         except:
-            pass
-        minio_clients.append(minio_client)
+            logger.info("Couldn't connect to minio:{}".format(minio_url))
 
     sjobs = [gevent.spawn(utils.upload_download_files, minio_clients[m], files_paths[m]) for m in range(options.minios_num)]
     gevent.joinall(sjobs)
+    logger.info("* Finished Uploading/Downloading files")
+
+    # Aggregate csv results for all minios servers
+    logger.info("* Aggregating results")
+    utils.aggregate_results(files_paths)
 
     # teardown
     if options.teardown:
         files_names = os.listdir(files_paths[0])
         tjobs = [gevent.spawn(utils.teardown_minios, files_names, minio_clients[m]) for m in range(options.minios_num)]
         gevent.joinall(tjobs)
+    logger.info(' ------- Test Ended ------- ')
 
 
 if __name__ == "__main__":
@@ -174,18 +227,19 @@ if __name__ == "__main__":
     parser.add_argument("-w", "--workers", type=int, default=10, dest="workers_num", required=True,
                         help='Number of greenlets to uploade/download files to/from the minio server simultaneously')
     parser.add_argument("-m", "--minios", type=int, default=5, dest="minios_num",
-                        help='Number of minio servers to be used')
+                        help='Number of minio servers used for running the test')
     parser.add_argument("-f", "--minios_file", type=argparse.FileType('r'), dest='minios_file', required=True,
-                        help="File that contains all minios, each line has minios's url, key and secret")
-    parser.add_argument('-p', '--files_num_sizes', dest='files_num_sizes', nargs='*',
-                        help="pairs of the number and the size(in Bytes) of files needed .. ex: 10 10000000 20 1000000000: this means 10 files of 10MB and 20 files of 1GB")
+                        help="CSV file that contains all minios, each line has a minios's url, key and secret")
+    parser.add_argument('-p', '--files_num_sizes', dest='files_num_sizes', nargs='*', required=True,
+                        help="pairs of the number and the size(in Bytes) of files need to be generated.. ex: 10 10000000 20 1000000000: this means 10 files of 10MB and 20 files of 1GB")
     parser.add_argument('--no_teardown', dest='teardown', default=True, action='store_false',
-                        help='Remove all files and all buckets for all minios, if "--no_teardown" flag is passed"')
+                        help='if "--no_teardown" flag is passed, All files and buckets for all minios will be removed')
 
     options = parser.parse_args()
+    workers = BoundedSemaphore(options.workers_num)
+    gevent.signal(signal.SIGQUIT, gevent.kill)
+
     if len(options.files_num_sizes) % 2:
         parser.error('files_num_sizes arg should be pairs of values')
 
-    workers = BoundedSemaphore(options.workers_num)
-    gevent.signal(signal.SIGQUIT, gevent.kill)
     main(options)
