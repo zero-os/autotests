@@ -57,8 +57,8 @@ class Utils(object):
         cjobs = [gevent.spawn(create_job, file_num_size[0], file_num_size[1]) for file_num_size in file_num_size_list]
         gevent.joinall(cjobs)
 
-        logger.info('* Finished generating files')
-        logger.info('* Replicating generated files for other minios ..')
+        logger.info('Finished generating files')
+        logger.info('Replicating generated files for other minios ..')
         files_paths = []
         # copy directory
         files_paths.append(files_path)
@@ -66,14 +66,14 @@ class Utils(object):
             copy_dir_name = files_path + str(m + 2)
             files_paths.append(copy_dir_name)
             shutil.copytree(files_path, copy_dir_name)
-        logger.info("* Finished copying folders")
+        logger.info("Finished copying folders")
         return files_paths
 
     def upload_download_files(self, minio_client, files_path):
         """
         files_path: is the path that has the files for one s3
         """
-        def job(minio_client, bucket, res_path, file_path):
+        def job(file_path):
             """
             file_path: specific path for a file to be uploaded/downloaded
             """
@@ -84,25 +84,34 @@ class Utils(object):
                 file_md5 = file_name.split('_')[-1]
                 # upload file
                 u_start = time.time()
-                minio_client.fput_object(bucket, file_name, file_path)
+                minio_client.fput_object(bucket_name, file_name, file_path)
                 u_end = time.time()
                 file_upload_speed = (file_size / ((u_end - u_start) * 1024 * 1024))
 
                 # download file
                 d_start = time.time()
-                d_file = minio_client.get_object(bucket, file_name)
+                d_file = minio_client.get_object(bucket_name, file_name)
                 d_end = time.time()
                 assert(hashlib.md5(d_file.data).hexdigest() == file_md5)
                 file_download_speed = (file_size / ((d_end - d_start) * 1024 * 1024))
 
                 # results
-                data = [file_name, file_size, '%.2f' % file_upload_speed, '%.2f' % u_start,
+                rand_str = "_" + str(uuid.uuid4()).replace('-', '')[:10]
+                data = [file_name + rand_str, file_size, '%.2f' % file_upload_speed, '%.2f' % u_start,
                         '%.2f' % u_end, '%.2f' % file_download_speed, '%.2f' % d_start, '%.2f' % d_end]
             with lock:
                 results_file = open(res_path, 'a')
                 with results_file:
                     writer = csv.writer(results_file)
                     writer.writerow(data)
+
+        def trigger_job():
+            random.shuffle(files_joint_list)
+            jobs = [gevent.spawn(job, file_path) for file_path in files_joint_list]
+            gevent.joinall(jobs)
+            if options.teardown:
+                files_names = os.listdir(files_path)
+                self.teardown_minios(files_names, minio_client)
 
         # create bucket
         bucket_name = str(uuid.uuid4()).replace('-', '')[:10]
@@ -123,9 +132,13 @@ class Utils(object):
             writer = csv.writer(results_file)
             writer.writerow(data)
 
-        random.shuffle(files_joint_list)
-        jobs = [gevent.spawn(job, minio_client, bucket_name, res_path, file_path) for file_path in files_joint_list]
-        gevent.joinall(jobs)
+        if options.stability:
+            now = time.time()
+            while time.time() < now + options.run_time:
+                trigger_job()
+            minio_client.remove_bucket(bucket_name)
+        else:
+            trigger_job()
 
     def aggregate_results(self, files_paths):
         """
@@ -152,12 +165,12 @@ class Utils(object):
                         for res_row in reader:
                             writer.writerow(res_row)
 
-    # later on get the objects names using the minio client if possible
     def teardown_minios(self, files_names, minio_client):
         buckets = minio_client.list_buckets()
         for bucket in buckets:
             for file_name in files_names:
                 minio_client.remove_object(bucket.name, file_name)
+        if not options.stability:
             minio_client.remove_bucket(bucket.name)
 
 
@@ -186,11 +199,11 @@ def main(options):
         execute = str(input('\n* Please note that the size needed to generate files to be uploaded is: {}.. if you have enough space, please enter "yes": '.format(size)))
         if execute != "yes":
             sys.exit(1)
-    logger.info("* Generating files for all minios to be uploaded ..")
+    logger.info("Generating files for all minios to be uploaded ..")
     files_paths = utils.create_files(file_num_size_list)
 
     # upload/download files to/from minios servers
-    logger.info("* Uploading/Downloading files to/from minios servers ..")
+    logger.info("Uploading/Downloading files to/from minios servers ..")
     minios = utils.parse_minios_file(options.minios_file)
 
     # Get minio clients
@@ -204,21 +217,15 @@ def main(options):
                                  secret_key=minio_secret, secure=False)
             minio_clients.append(minio_client)
         except:
-            logger.info("Couldn't connect to minio:{}".format(minio_url))
+            logger.info("Couldn't connect to minio: {}".format(minio_url))
 
     sjobs = [gevent.spawn(utils.upload_download_files, minio_clients[m], files_paths[m]) for m in range(options.minios_num)]
     gevent.joinall(sjobs)
-    logger.info("* Finished Uploading/Downloading files")
+    logger.info("Finished Uploading/Downloading files")
 
     # Aggregate csv results for all minios servers
-    logger.info("* Aggregating results")
+    logger.info("Aggregating results")
     utils.aggregate_results(files_paths)
-
-    # teardown
-    if options.teardown:
-        files_names = os.listdir(files_paths[0])
-        tjobs = [gevent.spawn(utils.teardown_minios, files_names, minio_clients[m]) for m in range(options.minios_num)]
-        gevent.joinall(tjobs)
     logger.info(' ------- Test Ended ------- ')
 
 
@@ -234,6 +241,10 @@ if __name__ == "__main__":
                         help="pairs of the number and the size(in Bytes) of files need to be generated.. ex: 10 10000000 20 1000000000: this means 10 files of 10MB and 20 files of 1GB")
     parser.add_argument('--no_teardown', dest='teardown', default=True, action='store_false',
                         help='if "--no_teardown" flag is passed, All files and buckets for all minios will be removed')
+    parser.add_argument('--stability_test', dest='stability', default=False, action='store_true',
+                        help='if "stability_test" flag is passed, stability test will be performed for a long time. if not, it will be performance test')
+    parser.add_argument("-r", "--run_time", type=int, default=3600, dest="run_time",
+                        help='Duration in seconds in which the stability test will be running .. This parameter is only used if it is stability test')
 
     options = parser.parse_args()
     workers = BoundedSemaphore(options.workers_num)
@@ -241,5 +252,10 @@ if __name__ == "__main__":
 
     if len(options.files_num_sizes) % 2:
         parser.error('files_num_sizes arg should be pairs of values')
+
+    if options.stability:
+        logger.info('Running stability test for {} secs'.format(options.run_time))
+    else:
+        logger.info('Running performance test')
 
     main(options)
