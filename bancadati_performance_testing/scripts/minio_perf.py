@@ -242,9 +242,9 @@ if __name__ == "__main__":
     parser.add_argument('--no_teardown', dest='teardown', default=True, action='store_false',
                         help='if "--no_teardown" flag is passed, All files and buckets for all minios will be removed')
     parser.add_argument('--stability_test', dest='stability', default=False, action='store_true',
-                        help='if "stability_test" flag is passed, stability test will be performed for a long time')
+                        help='if "stability_test" flag is passed, stability test will be performed for a long time. if not, it will be performance test')
     parser.add_argument("-r", "--run_time", type=int, default=3600, dest="run_time",
-                        help='Duration in seconds in which the stability test will be running .. This param is only used if the test is stability test')
+                        help='Duration in seconds in which the stability test will be running .. This parameter is only used if it is stability test')
 
     options = parser.parse_args()
     workers = BoundedSemaphore(options.workers_num)
