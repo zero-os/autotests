@@ -1,11 +1,11 @@
 
 ## minio_perf.py
 
-- This script uses greenlets to upload/download files to/from different minios servers. 
-It measures the files upload and download speeds and aggregate the results for all minios in a generated file  in this path: '/tmp/results_aggregated_{random_str}.csv' . 
+- This script uses greenlets to upload/download files to/from different minios servers.
+It measures the files upload and download speeds and aggregate the results for all minios in a generated file  in this path: '{data_path}/results_aggregated_{random_str}.csv' .
 Also all the logs are saved in "/var/log/j.minio_performance.log".
 
-- It can work in two modes which are performance mode and stability mode. Performance mode takes place by stressing the environment with high load through uploading and downloading certain number of files, While stability mode is achieved by applying real load to upload and download files for long amount of time and check how the ennvironment will behave.
+- It can work in two modes which are performance mode and stability mode. Performance mode takes place by stressing the environment with high load through uploading and downloading certain number of files, While stability mode is achieved by applying real load to upload and download files for long amount of time and check how the environment will behave.
 
 
 #### Here are the parameters this script takes
@@ -30,6 +30,8 @@ optional arguments:
                         pairs of the number and the size(in Bytes) of files
                         need to be generated.. ex: 10 10000000 20 1000000000:
                         this means 10 files of 10MB and 20 files of 1GB
+  -d DATA_PATH, --data_path DATA_PATH
+                        Data path in which all generated data will be stored
   --no_teardown         if "--no_teardown" flag is passed, All files and
                         buckets for all minios will be removed
   --stability_test      if "stability_test" flag is passed, stability test

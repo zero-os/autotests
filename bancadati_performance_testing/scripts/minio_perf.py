@@ -41,7 +41,7 @@ class Utils(object):
         """
         file_num_size_list: list of tuples, each tuple has files number and file size
         """
-        files_path = '/tmp/minio'
+        files_path = options.data_path + '/minio'
         os.makedirs(files_path)
 
         def create_job(files_num, file_size):
@@ -152,7 +152,7 @@ class Utils(object):
                     return os.path.join(res_dir, f)
 
         rand = str(uuid.uuid4()).replace('-', '')[:10]
-        res_path = '/tmp/results_aggregated_{}.csv'.format(rand)
+        res_path = options.data_path + '/results_aggregated_{}.csv'.format(rand)
         results_file = open(res_path, 'a')
         with results_file:
             writer = csv.writer(results_file)
@@ -183,7 +183,7 @@ def main(options):
         os.system("pip3 install minio")
 
     # clean data folders
-    os.system('rm -rf /tmp/minio*')
+    os.system('rm -rf {}/minio*'.format(options.data_path))
 
     # create files for all minios to be uploaded
     def pairs(single):
@@ -239,6 +239,8 @@ if __name__ == "__main__":
                         help="CSV file that contains all minios, each line has a minios's url, key and secret")
     parser.add_argument('-p', '--files_num_sizes', dest='files_num_sizes', nargs='*', required=True,
                         help="pairs of the number and the size(in Bytes) of files need to be generated.. ex: 10 10000000 20 1000000000: this means 10 files of 10MB and 20 files of 1GB")
+    parser.add_argument("-d", "--data_path", type=str, dest='data_path', default='/tmp',
+                        help="Path in which all generated data will be stored")
     parser.add_argument('--no_teardown', dest='teardown', default=True, action='store_false',
                         help='if "--no_teardown" flag is passed, All files and buckets for all minios will be removed')
     parser.add_argument('--stability_test', dest='stability', default=False, action='store_true',
